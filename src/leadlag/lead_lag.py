@@ -101,9 +101,11 @@ def cross_correlation(df: pd.DataFrame, x: str = "perp_ret", y: str = "ref_ret",
     """
     d = _sorted(df)
     sessions = pd.Index(d["session_id"].unique())
-    S = len(sessions)
     st = np.stack([_session_stats(d[x], shift_in_session(d, y, k, freq), d["session_id"], sessions)
                    for k in lags])                                    # (L, S, 6)
+    has_data = st[:, :, 0].sum(axis=0) > 0                            # sessions with any pairs
+    st = st[:, has_data, :]
+    S = int(has_data.sum())
     rho = _rho(st.sum(axis=1))
     out = pd.DataFrame({"lag": list(lags), "rho": rho, "n_pairs": st[:, :, 0].sum(axis=1).astype(int)})
     out["n_sessions"] = S
@@ -179,12 +181,15 @@ def _wald(res: OLSResult, idx: list[int]) -> dict:
         W = float(b @ np.linalg.solve(V, b))
     except np.linalg.LinAlgError:
         W = float(b @ np.linalg.pinv(V) @ b)
-    out = {"wald_chi2": W, "p_chi2": float(stats.chi2.sf(W, q))}
-    # small-cluster F version: F(q, G-1)
-    if res.n_clusters > 1:
-        out["p_F"] = float(stats.f.sf(W / q, q, res.n_clusters - 1))
+    # The clustered covariance has rank <= G - 1. With G - 1 < q restrictions the
+    # joint Wald test is undefined, so report no p-value rather than a spurious 0 or 1.
+    if res.n_clusters - 1 < q:
+        out = {"wald_chi2": np.nan, "p_chi2": np.nan, "p_F": np.nan,
+               "wald_note": f"undefined: {res.n_clusters} sessions for {q} restrictions"}
     else:
-        out["p_F"] = np.nan
+        out = {"wald_chi2": W, "p_chi2": float(stats.chi2.sf(W, q)),
+               "p_F": float(stats.f.sf(W / q, q, res.n_clusters - 1)),   # small-cluster F(q, G-1)
+               "wald_note": ""}
     a = np.ones(q)
     out["sum_coef"] = float(a @ b)
     out["sum_coef_se"] = float(np.sqrt(a @ V @ a))
@@ -283,16 +288,17 @@ def holdout_forecast(df: pd.DataFrame, dev_mask: pd.Series, eval_mask: pd.Series
                oos_r2_vs_base=1 - mse_full / mse_base, oos_r2_vs_zero=1 - mse_full / mse_zero,
                sign_hit_full=float((np.sign(yv) == np.sign(yv - e_full))[yv != 0].mean()),
                status="ok")
-    diff = e_base ** 2 - e_full ** 2
+    diff = (e_base ** 2 - e_full ** 2) * 1e8          # squared basis points
     sess = d.loc[em, "session_id"].to_numpy()
     codes, uniq = pd.factorize(sess)
     sums = np.bincount(codes, weights=diff, minlength=len(uniq))
     cnts = np.bincount(codes, minlength=len(uniq)).astype(float)
-    out["mean_loss_diff"] = float(diff.mean())
+    out["mean_loss_diff_bps2"] = float(diff.mean())
     if n_boot and len(uniq) >= 2:
         w = _boot_counts(len(uniq), n_boot, seed)
         boot = (w @ sums) / (w @ cnts)
-        out["loss_diff_ci_lo"], out["loss_diff_ci_hi"] = (float(v) for v in np.quantile(boot, [0.025, 0.975]))
+        out["loss_diff_ci_lo_bps2"], out["loss_diff_ci_hi_bps2"] = (
+            float(v) for v in np.quantile(boot, [0.025, 0.975]))
     out["descriptive_only"] = out["eval_sessions"] < MIN_SESSIONS_FOR_INFERENCE
     return out
 
@@ -301,7 +307,8 @@ def holdout_forecast(df: pd.DataFrame, dev_mask: pd.Series, eval_mask: pd.Series
 def describe(df: pd.DataFrame, perp: str = "perp_ret", ref: str = "ref_ret", freq: str = "1min") -> dict:
     """Coverage, volatility, first-order autocorrelation (bid-ask bounce check), staleness."""
     d = _sorted(df)
-    out = {"n_sessions": int(d["session_id"].nunique()), "grid_points": len(d),
+    paired = d[perp].notna() & d[ref].notna()
+    out = {"n_sessions": int(d.loc[paired, "session_id"].nunique()), "grid_points": len(d),
            "paired_returns": int((d[perp].notna() & d[ref].notna()).sum())}
     out["paired_share"] = out["paired_returns"] / max(len(d), 1)
     for name, col in (("perp", perp), ("ref", ref)):

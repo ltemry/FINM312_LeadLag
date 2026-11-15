@@ -284,10 +284,10 @@ def cmd_lead_lag(cfg: Config, a) -> None:
     print("\nSummary (asymmetry A = sum rho(k>0) - sum rho(k<0); p-values are session-clustered F tests):")
     print(summ.round(4).to_string(index=False))
     if "holdout" in res:
-        h = res["holdout"][["session", "direction", "p", "n_eval", "oos_r2_vs_base",
-                            "loss_diff_ci_lo", "loss_diff_ci_hi"]]
-        print("\nChronological holdout (fit Sep-Oct, evaluate Nov):")
-        print(h.round(5).to_string(index=False))
+        h = res["holdout"][["session", "direction", "p", "n_eval", "eval_sessions", "oos_r2_vs_base",
+                            "mean_loss_diff_bps2", "loss_diff_ci_lo_bps2", "loss_diff_ci_hi_bps2"]]
+        print("\nChronological holdout (fit Sep-Oct, evaluate Nov; loss difference in bps^2, > 0 = other venue helps):")
+        print(h.round(4).to_string(index=False))
     if summ["descriptive_only"].any():
         print("\nNote: groups with < 10 sessions are descriptive only; do not read their CIs/p-values as tests.")
     print(f"\nWrote {out}/ (describe, xcorr, asymmetry, regressions, summary, settings)")

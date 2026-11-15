@@ -117,7 +117,19 @@ class TAQCollector:
             WHERE sym_root = %(sym)s AND coalesce(sym_suffix, '') = %(suffix)s
               AND time_m BETWEEN %(t0)s AND %(t1)s
               AND tr_corr = '00' AND price > 0
+              {self._condition_filter()}
             GROUP BY 1 ORDER BY 1"""
+
+    def _condition_filter(self) -> str:
+        """Drop prints that do not set the last-sale price (late / out-of-sequence,
+        average-price, odd-lot, prior-reference, derivatively priced, Form T...) and
+        auction/official prints (kept separately in auction_trades)."""
+        excl = self.c.get("trade_exclude_conditions", "")
+        if not excl:
+            return ""
+        if not re.fullmatch(r"[A-Z0-9]+", excl):
+            raise ValueError(f"bad trade_exclude_conditions {excl!r}")
+        return f"AND coalesce(tr_scond, '') !~ '[{excl}]'"
 
     def auction_sql(self, table: str) -> str:
         """Opening/closing/official/reopening prints, all exchanges, NOT filtered by

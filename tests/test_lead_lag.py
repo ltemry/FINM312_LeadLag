@@ -114,7 +114,7 @@ def test_holdout_positive_when_perp_leads_and_not_otherwise():
     dates = sorted(d.et_date.unique())
     dev, ev = d.et_date.isin(dates[:14]), d.et_date.isin(dates[14:])
     h = holdout_forecast(d, dev, ev, "ref_ret", "perp_ret", 2, n_boot=200)
-    assert h["oos_r2_vs_base"] > 0.2 and h["loss_diff_ci_lo"] > 0
+    assert h["oos_r2_vs_base"] > 0.2 and h["loss_diff_ci_lo_bps2"] > 0
     n = synthetic(beta=0.0, n_days=20)
     h0 = holdout_forecast(n, dev, ev, "ref_ret", "perp_ret", 2, n_boot=200)
     assert h0["oos_r2_vs_base"] < 0.01
@@ -136,3 +136,11 @@ def test_run_analysis_groups_and_summary():
     assert set(res["asymmetry"]["period"]) == {"baseline", "crisis", "pooled"}
     s = summary_table(res, p_focus=2)
     assert (s["asym_A"] > 0).all() and len(s) == 3
+
+
+def test_wald_undefined_with_too_few_sessions():
+    """3 sessions cannot support a 5-restriction clustered test: no spurious 0/1 p-values."""
+    row = predictive_regression(synthetic(lead=1, n_days=3), "ref_ret", "perp_ret", 5)
+    assert np.isnan(row["p_F"]) and np.isnan(row["p_chi2"]) and "undefined" in row["wald_note"]
+    ok = predictive_regression(synthetic(lead=1, n_days=12), "ref_ret", "perp_ret", 5)
+    assert ok["p_F"] < 1e-6 and ok["wald_note"] == ""

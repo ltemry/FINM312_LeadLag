@@ -158,6 +158,14 @@ taq:
   session_end: "20:00:00"        # ET
   drop_invalid_on_server: true   # non-positive or crossed NBBO; locked kept and flagged later
   collect_trades: true           # bucketed volume / count / VWAP / last (tr_corr = '00')
+  # Sale conditions excluded from the continuous trade buckets: prints that do
+  # not update the last-sale price or carry stale/out-of-sequence prices, plus
+  # auction/official prints (collected separately below).
+  #   B,W avg price | C cash | G bunched sold | H price variation | I odd lot
+  #   M,Q official close/open | N next day | O,5,6 opening/reopening/closing prints
+  #   P prior reference | R seller | T Form T (ext. hours) | U ext. hours out of seq.
+  #   V contingent | Z sold out of sequence | 4 derivatively priced | 7 QCT | 9 corr. close
+  trade_exclude_conditions: "BCGHIMNOPQRTUVWZ45679"
   # Opening/closing/official prints, all exchanges, unfiltered, stored
   # separately from continuous-trading data for auctions.py:
   #   O opening print, Q official open, 6 closing print, M official close, 5 reopening print
