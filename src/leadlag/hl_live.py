@@ -1,4 +1,8 @@
-"""Live Hyperliquid recorder (websocket).
+"""Optional forward collector for Hyperliquid (websocket).
+
+A planned option, not a running process: start it only if historical quotes
+are unavailable and a separately labelled forward sample is wanted. It cannot
+reconstruct past quotes.
 
 Hyperliquid's API does not serve historical BBO quotes or mark/oracle time
 series, so this records them going forward:
@@ -82,6 +86,12 @@ class LiveRecorder:
             return
         self.counts[ch] += 1
 
+    def event(self, kind: str, detail: str = "") -> None:
+        """Connection events, so gaps in the sample can be flagged later."""
+        self.buf[("events", "_session")].append({"recv_ts_utc": pd.Timestamp.now(tz="UTC"),
+                                                 "event": kind, "detail": detail[:300],
+                                                 "coins": ",".join(self.coins)})
+
     # ------------------------------------------------------------ storage
     def flush(self) -> None:
         now = dt.datetime.now(dt.timezone.utc)
@@ -106,6 +116,7 @@ class LiveRecorder:
                     await ws.send(json.dumps({"method": "subscribe",
                                               "subscription": {"type": ch, "coin": coin}}))
             log.info("subscribed %s to %s", self.coins, self.channels)
+            self.event("connected", ",".join(self.channels))
             last_ping = last_flush = time.monotonic()
             while not self.stop.is_set():
                 try:
@@ -134,12 +145,14 @@ class LiveRecorder:
                 backoff = 1
             except Exception as e:
                 log.warning("websocket error: %s; reconnecting in %ds", e, backoff)
+                self.event("disconnected", f"{type(e).__name__}: {e}")
                 self.flush()
                 try:
                     await asyncio.wait_for(self.stop.wait(), timeout=backoff)
                 except asyncio.TimeoutError:
                     pass
                 backoff = min(backoff * 2, 60)
+        self.event("stopped")
         self.flush()
 
 

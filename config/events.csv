@@ -1,1 +1,3 @@
 event_id,instrument,event_name,event_type,first_publication_utc,source,source_url,market_status,verified,notes
+NVDA_CEO_BOARD,NVDA,Board accepts CEO resignation (internal decision),corporate_decision,,SEC filing,https://www.sec.gov/Archives/edgar/data/1045810/000104581026000082/nvda-20261111.htm,,false,Board action dated 2026-11-11; NOT the public information time; do not use as event timestamp
+NVDA_CEO_RELEASE,NVDA,NVIDIA announces CEO transition,news_release,,NVIDIA newsroom,https://nvidianews.nvidia.com/news/nvidia-announces-ceo-transition,,false,Release dated 2026-11-12; verify exact first publication timestamp (and any earlier wire/filing) before labelling observations

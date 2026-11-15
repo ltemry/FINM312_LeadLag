@@ -1,21 +1,18 @@
-"""Hyperliquid historical collector (REST API + optional S3 L2 archive).
+"""Hyperliquid public-API collector (free): contract metadata and funding.
 
-What history is actually available for HIP-3 perps such as xyz:TSLA:
-  * candleSnapshot: trade-based OHLCV bars. Only the most recent 5000 bars per
-    interval are served (1m ~ 3.5 days back, 1h ~ 208 days back).
-  * fundingHistory: hourly funding rate and premium, full history.
-  * metaAndAssetCtxs: contract metadata and current mark/oracle/mid (snapshot only).
-  * S3 requester-pays archive of L2 book snapshots (optional, needs AWS creds;
-    uploaded roughly monthly; HIP-3 coverage undocumented).
-Historical quotes (BBO) and mark/oracle time series are NOT served by the API,
-so for forward-looking dates run `leadlag hl-record` (see hl_live.py).
+* metaAndAssetCtxs + perpDexs: contract specs and current mark/oracle, saved
+  as a timestamped snapshot on every run (builds a record of rule changes).
+* fundingHistory: hourly funding rate and premium, full history.
+* candleSnapshot (off by default): only the most recent 5000 bars per
+  interval are served, so historical candles come from Dwellir instead.
 
-All timestamps are stored as tz-aware UTC. Files are per coin per UTC day.
+The requester-pays S3 archive is deliberately NOT used: no paid archive or
+requester-pays transfer is authorized (docs/project_plan.md).
+All timestamps are tz-aware UTC. Files are per coin per UTC day.
 """
 from __future__ import annotations
 
 import datetime as dt
-import io
 import json
 import logging
 import time
@@ -107,7 +104,6 @@ class HyperliquidCollector:
         self.manifest = manifest
         self.force = force
         self.dry_run = dry_run
-        self._s3 = None
         self._meta_done: set[str] = set()
 
     def coins(self, task: Task) -> list[str]:
@@ -216,61 +212,6 @@ class HyperliquidCollector:
         except Exception as e:
             self.manifest.record(self.source, dataset, coin, d, "error", message=str(e)[:200])
 
-    # ------------------------------------------------------------- S3 L2 book
-    @property
-    def s3(self):
-        if self._s3 is None:
-            import boto3  # optional dependency
-
-            self._s3 = boto3.client("s3")
-        return self._s3
-
-    def _s3_l2book(self, coin: str, d: dt.date) -> None:
-        import lz4.frame
-
-        sc = self.c.get("s3_l2book", {})
-        levels = int(sc.get("book_levels", 5))
-        dataset = "l2book_s3"
-        path = raw_path(self.cfg.data_dir, self.source, dataset, coin, d)
-        if already_done(path, self.force):
-            self.manifest.record(self.source, dataset, coin, d, "skipped", path=path)
-            return
-        if self.dry_run:
-            log.info("[dry-run] %s %s %s (24 hourly S3 objects)", dataset, coin, d)
-            return
-        bucket = sc.get("bucket", "hyperliquid-archive")
-        records, missing = [], []
-        for hour in range(24):
-            key = f"market_data/{d:%Y%m%d}/{hour}/l2Book/{coin}.lz4"
-            try:
-                obj = self.s3.get_object(Bucket=bucket, Key=key, RequestPayer="requester")
-                text = lz4.frame.decompress(obj["Body"].read()).decode()
-            except Exception as e:
-                missing.append(f"{hour}:{type(e).__name__}")
-                continue
-            for line in io.StringIO(text):
-                if not line.strip():
-                    continue
-                rec = json.loads(line)
-                data = rec.get("raw", {}).get("data", rec)
-                bids, asks = data["levels"]
-                row = {"ts_utc": pd.Timestamp(data["time"], unit="ms", tz="UTC"), "coin": coin}
-                for side, book in (("bid", bids), ("ask", asks)):
-                    for i in range(levels):
-                        row[f"{side}_px_{i}"] = float(book[i]["px"]) if i < len(book) else None
-                        row[f"{side}_sz_{i}"] = float(book[i]["sz"]) if i < len(book) else None
-                records.append(row)
-        if not records:
-            mark_empty(path, f"no S3 objects found ({', '.join(missing[:3])}...)")
-            self.manifest.record(self.source, dataset, coin, d, "empty", path=path,
-                                 message="no S3 l2Book objects for this coin/day")
-            return
-        df = pd.DataFrame(records).sort_values("ts_utc")
-        df["mid"] = (df["bid_px_0"] + df["ask_px_0"]) / 2
-        write_parquet(df, path)
-        self.manifest.record(self.source, dataset, coin, d, "ok", len(df), path,
-                             f"missing hours: {len(missing)}")
-
     # ------------------------------------------------------------- run
     def run(self, task: Task) -> None:
         dex = task.leg.get("dex")
@@ -284,5 +225,3 @@ class HyperliquidCollector:
                 self._candles(coin, task.date, interval)
             if self.c.get("collect_funding", True):
                 self._funding(coin, task.date)
-            if self.c.get("s3_l2book", {}).get("enabled"):
-                self._s3_l2book(coin, task.date)

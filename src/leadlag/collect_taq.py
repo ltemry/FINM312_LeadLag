@@ -119,6 +119,20 @@ class TAQCollector:
               AND tr_corr = '00' AND price > 0
             GROUP BY 1 ORDER BY 1"""
 
+    def auction_sql(self, table: str) -> str:
+        """Opening/closing/official/reopening prints, all exchanges, NOT filtered by
+        tr_corr or session, so official-price fallbacks and corrections stay visible."""
+        conds = self.c.get("auction_conditions", "OQ6M5")
+        if not re.fullmatch(r"[A-Z0-9]+", conds):
+            raise ValueError(f"bad auction_conditions {conds!r}")
+        return f"""
+            SELECT date, time_m, time_m_nano, ex, sym_root, sym_suffix, tr_scond, size, price,
+                   tr_corr, tr_seqnum, tr_id, tr_source, tr_rf, part_time, part_time_nano
+            FROM {table}
+            WHERE sym_root = %(sym)s AND coalesce(sym_suffix, '') = %(suffix)s
+              AND tr_scond ~ '[{conds}]'
+            ORDER BY time_m, time_m_nano"""
+
     # ---------------------------------------------------------------- tidy
     def _to_utc(self, date_s: pd.Series, time_s: pd.Series) -> pd.Series:
         """TAQ stores ET wall-clock date + time; return tz-aware UTC timestamps."""
@@ -155,6 +169,15 @@ class TAQCollector:
         out["mid"] = (out["bid"] + out["ask"]) / 2
         return out
 
+    def _tidy_auction(self, df: pd.DataFrame, d: dt.date) -> pd.DataFrame:
+        df["trade_ts_utc"] = self._to_utc(df["date"], df["time_m"]) + pd.to_timedelta(
+            df["time_m_nano"].fillna(0).astype("int64"), unit="ns")
+        df["price"] = df["price"].astype(float)
+        df["size"] = df["size"].astype("int64")
+        for col in ("part_time", "time_m"):
+            df[col] = df[col].astype(str)
+        return df
+
     def _tidy_trades(self, df: pd.DataFrame, d: dt.date) -> pd.DataFrame:
         if self.sec <= 0:
             df["trade_ts_utc"] = self._to_utc(df["date"], df["time_m"])
@@ -174,9 +197,11 @@ class TAQCollector:
         jobs = [("nbbo", "nbbo_table_pattern", self.nbbo_sql, self._tidy_nbbo)]
         if self.c.get("collect_trades", True):
             jobs.append(("trades", "trades_table_pattern", self.trades_sql, self._tidy_trades))
+        if self.c.get("collect_auction_trades", True):
+            jobs.append(("auction", "trades_table_pattern", self.auction_sql, self._tidy_auction))
 
         for kind, pattern_key, sql_fn, tidy in jobs:
-            dataset = f"{kind}_{tag}"
+            dataset = "auction_trades" if kind == "auction" else f"{kind}_{tag}"
             path = raw_path(self.cfg.data_dir, self.source, dataset, task.instrument, task.date)
             if already_done(path, self.force):
                 self.manifest.record(self.source, dataset, task.instrument, task.date, "skipped", path=path)
