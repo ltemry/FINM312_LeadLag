@@ -1,0 +1,186 @@
+# =============================================================================
+# FINM312 Lead-Lag: project configuration
+#
+# All tickers, contracts, and dates live here, not in the code. To add a market
+# or change a sample window, edit this file and re-run the collectors.
+# =============================================================================
+
+project:
+  data_dir: data                 # relative to the repo root
+  market_timezone: America/New_York
+  # Extra full-day US equity closures not covered by the standard NYSE holiday
+  # rules (e.g. national days of mourning). Format: YYYY-MM-DD.
+  extra_market_closures:
+    - "2025-01-09"               # National Day of Mourning (President Carter)
+
+# -----------------------------------------------------------------------------
+# Instruments. Each one can have up to three legs:
+#   equity  -> WRDS TAQ
+#   perp    -> Hyperliquid (HIP-3 builder-deployed perpetual)
+#   futures -> Databento CME
+# A collector only runs for instruments that have the matching leg.
+# -----------------------------------------------------------------------------
+instruments:
+
+  TSLA:
+    equity:
+      symbol: TSLA
+      taq_sym_root: TSLA
+      taq_sym_suffix: ""         # "" = common shares (no suffix)
+    perp:
+      coin: "xyz:TSLA"           # primary contract used in the analysis
+      dex: xyz                   # trade.xyz (HIP-3 deployer)
+      deployer: "0x88806a71d74ad0a510b350545c9ae490912f0888"
+      contract_units: "1 contract = 1 share-equivalent (USDC-margined, linear); verify with deployer docs"
+      # Same underlying from other HIP-3 deployers. Collected only if
+      # `collect_alt_coins: true` below. Run `leadlag hl-contracts --match TSLA`
+      # to re-check what is listed.
+      alt_coins: []                # flx/km/cash/mkts TSLA all delisted (checked 2026-11-14)
+
+  NVDA:
+    equity:
+      symbol: NVDA
+      taq_sym_root: NVDA
+      taq_sym_suffix: ""
+    perp:
+      coin: "xyz:NVDA"
+      dex: xyz
+      deployer: "0x88806a71d74ad0a510b350545c9ae490912f0888"
+      contract_units: "1 contract = 1 share-equivalent (USDC-margined, linear); verify with deployer docs"
+      alt_coins: ["io:NVDA"]      # flx/km/cash NVDA delisted (checked 2026-11-14)
+
+  ANT:
+    equity:
+      # TODO: fill in the listed ticker and exchange once the IPO is confirmed.
+      # While symbol is null, TAQ collection is skipped for ANT.
+      symbol: null
+      taq_sym_root: null
+      taq_sym_suffix: ""
+    perp:
+      coin: "xyz:ANT"
+      dex: xyz
+      deployer: "0x88806a71d74ad0a510b350545c9ae490912f0888"
+      contract_units: "Pre-IPO perp; check the deployer's conversion/oracle rules at listing"
+      # io:ANTH trades ~1777 vs ~102 on xyz:ANT, so it uses a different price
+      # scale; check its spec before comparing. vntl:ANTHROPIC is delisted.
+      alt_coins: ["io:ANTH", "para:ANTH"]
+
+  SP500:
+    perp:
+      coin: "xyz:SP500"
+      dex: xyz
+      deployer: "0x88806a71d74ad0a510b350545c9ae490912f0888"
+      contract_units: "1 contract = 1 index point (USDC-margined, linear); verify with deployer docs"
+      alt_coins: []                # flx/km/cash/mkts S&P contracts delisted (checked 2026-11-14)
+    futures:
+      dataset: GLBX.MDP3
+      # Pin a specific expiry for analysis (e.g. ESZ6 = Dec 2026) with
+      # stype_in: raw_symbol, or use a continuous symbol such as ES.v.0
+      # (front month by volume) with stype_in: continuous.
+      symbol: ES.v.0
+      stype_in: continuous
+      multiplier: 50             # USD per index point
+
+# -----------------------------------------------------------------------------
+# Studies: pick the dates for each part of the project here.
+#
+# Each study lists instruments, sources, and EITHER
+#   dates: [YYYY-MM-DD, ...]         (an explicit list), OR
+#   start: YYYY-MM-DD / end: YYYY-MM-DD   (inclusive range)
+# plus optional exclude_dates.
+#
+# Day rules per source:
+#   taq         -> NYSE trading days only
+#   hyperliquid -> every calendar day (perps trade 24/7, needed for closures)
+#   databento   -> every calendar day except Saturday (CME is closed)
+#
+# Override any of this from the command line with --start/--end/--dates.
+# -----------------------------------------------------------------------------
+studies:
+
+  pilot:
+    description: "First milestone: one matching TSLA day from TAQ and Hyperliquid"
+    instruments: [TSLA]
+    sources: [taq, hyperliquid]
+    dates: ["2026-11-13"]
+
+  baseline:
+    description: "TSLA/NVDA baseline lead-lag (SP500 included for the ES control)"
+    instruments: [TSLA, NVDA, SP500]
+    sources: [taq, hyperliquid, databento]
+    start: "2026-11-02"
+    end: "2026-11-13"
+    exclude_dates: []
+
+  events:
+    description: "News/event windows (dates should match events.csv)"
+    instruments: [TSLA, NVDA]
+    sources: [taq, hyperliquid]
+    dates: []                    # e.g. earnings days, delivery reports
+
+  ant_ipo:
+    description: "ANT IPO case study"
+    instruments: [ANT]
+    sources: [taq, hyperliquid]
+    start: null                  # TODO: pre-announcement start date
+    end: null                    # TODO: a few days after first trade
+    # Reference timestamps for the case study (UTC, ISO 8601). Fill in once verified.
+    offer_price_announcement_utc: null
+    first_exchange_trade_utc: null
+
+  sp_es:
+    description: "S&P perp vs ES futures"
+    instruments: [SP500]
+    sources: [hyperliquid, databento]
+    start: "2026-11-02"
+    end: "2026-11-13"
+
+# -----------------------------------------------------------------------------
+# Source-specific settings
+# -----------------------------------------------------------------------------
+taq:
+  # WRDS library per year. Daily TAQ (millisecond) lives in taqm_YYYY.
+  library_pattern: "taqm_{year}"
+  nbbo_table_pattern: "complete_nbbo_{yyyymmdd}"
+  trades_table_pattern: "ctm_{yyyymmdd}"
+  # Sample on the WRDS server before downloading: keep the LAST valid NBBO
+  # in each bucket. Set to 0 to download every NBBO update (use for the pilot
+  # day only; files are large).
+  sample_seconds: 1
+  session_start: "04:00:00"      # ET, includes pre-market
+  session_end: "20:00:00"        # ET, includes after-hours
+  # Drop rows with non-positive or crossed NBBO on the server. Locked/crossed
+  # flags for the remaining rows are added in the cleaning step.
+  drop_invalid_on_server: true
+  collect_trades: true           # bucketed volume / trade count / VWAP
+
+hyperliquid:
+  info_url: https://api.hyperliquid.xyz/info
+  ws_url: wss://api.hyperliquid.xyz/ws
+  # Candle intervals to try for each date. The API keeps only the most recent
+  # 5000 candles per interval (1m ~ 3.5 days, 5m ~ 17 days, 15m ~ 52 days,
+  # 1h ~ 208 days), so older dates get only the coarser intervals.
+  # Run the collector daily (or keep the live recorder on) to archive 1m data
+  # before it rolls off.
+  candle_intervals: ["1m", "5m", "15m", "1h"]
+  collect_funding: true          # hourly funding + premium history
+  collect_alt_coins: false
+  # Optional: historical L2 book snapshots from the requester-pays S3 archive
+  # s3://hyperliquid-archive/market_data/YYYYMMDD/H/l2Book/COIN.lz4
+  # Needs AWS credentials (you pay transfer costs). Coverage of HIP-3 coins
+  # is not documented; the collector records what it finds.
+  s3_l2book:
+    enabled: false
+    bucket: hyperliquid-archive
+    book_levels: 5               # levels per side to keep
+  # Live websocket recorder (bbo, trades, mark/oracle via activeAssetCtx)
+  live:
+    channels: [bbo, trades, activeAssetCtx]
+    flush_seconds: 60
+
+databento:
+  # bbo-1s = best bid/offer sampled each second; use mbp-1 for every top-of-book
+  # update or ohlcv-1s for trade bars.
+  schema: bbo-1s
+  # Refuse to download if the estimated cost for a single request exceeds this.
+  max_cost_usd_per_request: 5.0
