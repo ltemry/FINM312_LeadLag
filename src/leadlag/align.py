@@ -146,3 +146,61 @@ def coverage_table(aligned: pd.DataFrame) -> pd.DataFrame:
 
 def to_et(ts_utc: pd.Series) -> pd.Series:
     return ts_utc.dt.tz_convert(ET)
+
+
+def attach_control(aligned: pd.DataFrame, series: pd.DataFrame, name: str = "es",
+                   max_age: str = "60s", exact: bool | None = None, freq: str = "1min") -> pd.DataFrame:
+    """Add a broad-market control (e.g. ES) on the same grid: {name}_price, ages, {name}_ret.
+
+    Same timestamp convention as the pair: available at or before each grid time.
+    """
+    if exact is None:
+        exact = series is not None and not series.empty and (series["price_type"] == "trade").all()
+    out = asof_join(aligned, series, name, max_age, exact=exact)
+    out[f"{name}_ret"] = session_returns(out, f"{name}_price", freq)
+    return out
+
+
+def build_for_study(cfg, study: str | None, instrument: str, ref: str | None = None,
+                    ref_type: str = "trade", ref_kind: str | None = None, perp_source: str = "dwellir",
+                    interval: str = "1m", freq: str = "1min", sessions: Sequence[str] = ("regular",),
+                    max_age: str = "60s", which: str = "scored", control: str | None = None,
+                    start=None, end=None, dates=None) -> pd.DataFrame:
+    """Load, normalize and align one perp-vs-reference pair for a study's dates.
+
+    `control` (e.g. "ES") adds lagged-control returns as `es_ret` (name lower-cased).
+    """
+    from . import normalize as N
+
+    if cfg.is_deferred(instrument):
+        raise ValueError(f"{instrument} is deferred")
+    et_dates = cfg.study_dates(study, start, end, dates, which=which)
+    trading = cfg.trading_days(et_dates)
+    utc_days = cfg.utc_days(et_dates)
+    grid = session_grid(trading, sessions, freq, cfg.extra_closures)
+
+    coin = cfg.instruments[instrument]["perp"]["coin"]
+    perp = (N.dwellir_bars(cfg, coin, utc_days, interval) if perp_source == "dwellir"
+            else N.hl_live_bbo(cfg, coin, utc_days))
+
+    def load_ref(name: str, kind: str | None, rtype: str) -> pd.DataFrame:
+        inst = cfg.instruments[name]
+        if "equity" in inst and kind != "futures":
+            sym = inst["equity"]["taq_sym_root"]
+            return N.taq_trade_bars(cfg, sym, trading, freq) if rtype == "trade" else N.taq_mid(cfg, sym, trading)
+        sym = inst["futures"]["symbol"]
+        return N.databento_bars(cfg, sym, utc_days) if rtype == "trade" else N.databento_bbo(cfg, sym, utc_days)
+
+    ref_name = ref or instrument
+    out = align_pair(grid, load_ref(ref_name, ref_kind, ref_type), perp, max_age=max_age, freq=freq)
+    out["pair"] = f"{coin} vs {ref_name}"
+    out["period"] = study or "custom"
+    if study:
+        s = cfg.study(study)
+        for block in ("development", "evaluation"):
+            if s.get(block):
+                from .config import parse_blocks
+                out.loc[out["et_date"].isin(set(parse_blocks(s[block]))), "block"] = block
+    if control:
+        out = attach_control(out, load_ref(control, "futures", ref_type), control.lower(), max_age, freq=freq)
+    return out

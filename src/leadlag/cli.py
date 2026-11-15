@@ -18,6 +18,11 @@ Stage 3: align
     leadlag align --study pilot --instrument TSLA      # perp vs TAQ, 1-minute grid
     leadlag align --study panel --instrument SP500 --ref ES
 
+Stage 4: lead-lag
+    leadlag lead-lag --studies nvda_baseline nvda_comparison nvda_crisis --instrument NVDA
+    leadlag lead-lag --studies panel --instrument TSLA --holdout
+    leadlag lead-lag --studies panel --instrument SP500 --ref ES --control none
+
 Optional forward sample (not running by default):
     leadlag hl-record --instruments TSLA NVDA SP500
 """
@@ -198,36 +203,15 @@ def cmd_coverage(cfg: Config, a) -> None:
 
 # ---------------------------------------------------------------- stage 3
 def cmd_align(cfg: Config, a) -> None:
-    from . import normalize as N
-    from .align import align_pair, coverage_table, session_grid
+    from .align import build_for_study, coverage_table
 
-    if cfg.is_deferred(a.instrument):
-        sys.exit(f"{a.instrument} is deferred")
-    inst = cfg.instruments[a.instrument]
-    et_dates = cfg.study_dates(a.study, a.start, a.end, a.dates,
-                               which="scored" if a.scored else "retrieval")
-    trading = cfg.trading_days(et_dates)
-    utc_days = cfg.utc_days(et_dates)
-    grid = session_grid(trading, a.sessions, a.freq, cfg.extra_closures)
-
-    coin = inst["perp"]["coin"]
-    perp = (N.dwellir_bars(cfg, coin, utc_days, a.interval) if a.perp_source == "dwellir"
-            else N.hl_live_bbo(cfg, coin, utc_days))
-    ref_name = a.ref or a.instrument
-    ref_inst = cfg.instruments[ref_name]
-    if "equity" in ref_inst and a.ref_kind != "futures":
-        sym = ref_inst["equity"]["taq_sym_root"]
-        ref = (N.taq_trade_bars(cfg, sym, trading, a.freq) if a.ref_type == "trade"
-               else N.taq_mid(cfg, sym, trading))
-    else:
-        sym = ref_inst["futures"]["symbol"]
-        ref = (N.databento_bars(cfg, sym, utc_days) if a.ref_type == "trade"
-               else N.databento_bbo(cfg, sym, utc_days))
-    aligned = align_pair(grid, ref, perp, max_age=a.max_age, freq=a.freq)
-    aligned["pair"] = f"{coin} vs {ref_name}"
+    aligned = build_for_study(cfg, a.study, a.instrument, a.ref, a.ref_type, a.ref_kind, a.perp_source,
+                              a.interval, a.freq, a.sessions, a.max_age,
+                              which="scored" if a.scored else "retrieval",
+                              start=a.start, end=a.end, dates=a.dates)
     out = cfg.data_dir / "aligned" / (a.study or "custom")
     out.mkdir(parents=True, exist_ok=True)
-    tag = f"{a.instrument}_vs_{ref_name}_{a.ref_type}_{a.freq}_{'-'.join(a.sessions)}"
+    tag = f"{a.instrument}_vs_{a.ref or a.instrument}_{a.ref_type}_{a.freq}_{'-'.join(a.sessions)}"
     aligned.to_parquet(out / f"{tag}.parquet", index=False)
     cov = coverage_table(aligned)
     cov.to_csv(out / f"{tag}_coverage.csv", index=False)
@@ -235,6 +219,78 @@ def cmd_align(cfg: Config, a) -> None:
     print(f"\nperp price type: {aligned['perp_price_type'].dropna().unique().tolist()} | "
           f"ref price type: {aligned['ref_price_type'].dropna().unique().tolist()}")
     print(f"Wrote {out / (tag + '.parquet')}")
+
+
+# ---------------------------------------------------------------- stage 4
+def cmd_lead_lag(cfg: Config, a) -> None:
+    import datetime as dt
+
+    import pandas as pd
+
+    from .align import build_for_study
+    from .lead_lag import holdout_forecast, mask_windows, run_analysis, summary_table
+
+    control = None if (a.control or "").lower() == "none" else a.control
+    if control and control == (a.ref or a.instrument):
+        control = None  # the reference itself (e.g. SP500 vs ES): no separate ES control
+    frames = []
+    for study in a.studies:
+        df = build_for_study(cfg, study, a.instrument, a.ref, a.ref_type, None, a.perp_source, a.interval,
+                             a.freq, a.sessions, a.max_age, which="retrieval" if a.retrieval else "scored",
+                             control=control)
+        frames.append(df)
+    df = pd.concat(frames, ignore_index=True)
+    ctrl_cols = [f"{control.lower()}_ret"] if control else []
+    if control and (ctrl_cols[0] not in df or df[ctrl_cols[0]].notna().sum() == 0):
+        log.warning("no %s data on these dates: running WITHOUT the market control (download it first)", control)
+        ctrl_cols = []
+    df = mask_windows(df, ["perp_ret", "ref_ret", *ctrl_cols], a.exclude_open, a.exclude_close)
+    if df[["perp_ret", "ref_ret"]].notna().all(axis=1).sum() == 0:
+        sys.exit("No paired returns: collect the data first (see `leadlag coverage`).")
+
+    lags = tuple(range(-a.lags, a.lags + 1))
+    res = run_analysis(df, ("period", "session"), lags, range(1, a.max_p + 1), ctrl_cols, a.n_boot, a.seed, a.freq)
+    if a.holdout:
+        if "block" not in df or df["block"].isna().all():
+            sys.exit("--holdout needs a study with development/evaluation blocks (e.g. panel)")
+        rows = []
+        for sess in a.sessions:
+            sub = df[df["session"] == sess]
+            for p in range(1, a.max_p + 1):
+                for direction, target, other in (("perp -> ref", "ref_ret", "perp_ret"),
+                                                 ("ref -> perp", "perp_ret", "ref_ret")):
+                    r = holdout_forecast(sub, sub["block"] == "development", sub["block"] == "evaluation",
+                                         target, other, p, ctrl_cols, a.freq, a.n_boot, a.seed)
+                    rows.append({"session": sess, "direction": direction, **r})
+        res["holdout"] = pd.DataFrame(rows)
+
+    tag = f"{a.instrument}_vs_{a.ref or a.instrument}_{a.ref_type}_{a.freq}"
+    out = cfg.data_dir / "results" / tag
+    out.mkdir(parents=True, exist_ok=True)
+    for name, t in res.items():
+        t.to_csv(out / f"{name}.csv", index=False)
+    summ = summary_table(res, p_focus=min(5, a.max_p))
+    summ.to_csv(out / "summary.csv", index=False)
+    settings = {k: v for k, v in vars(a).items() if k != "fn"}
+    settings.update(run_utc=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                    control_used=ctrl_cols or None,
+                    convention="rho(k) = Corr(perp_t, ref_{t+k}); k > 0 means the perp comes first")
+    (out / "settings.json").write_text(json.dumps(settings, indent=1, default=str))
+
+    pd.set_option("display.width", 200)
+    print("rho(k) = Corr(perp_t, ref_t+k); positive k = perpetual first\n")
+    piv = res["xcorr"].pivot_table(index="lag", columns=["period", "session"], values="rho")
+    print(piv.round(3).to_string())
+    print("\nSummary (asymmetry A = sum rho(k>0) - sum rho(k<0); p-values are session-clustered F tests):")
+    print(summ.round(4).to_string(index=False))
+    if "holdout" in res:
+        h = res["holdout"][["session", "direction", "p", "n_eval", "oos_r2_vs_base",
+                            "loss_diff_ci_lo", "loss_diff_ci_hi"]]
+        print("\nChronological holdout (fit Sep-Oct, evaluate Nov):")
+        print(h.round(5).to_string(index=False))
+    if summ["descriptive_only"].any():
+        print("\nNote: groups with < 10 sessions are descriptive only; do not read their CIs/p-values as tests.")
+    print(f"\nWrote {out}/ (describe, xcorr, asymmetry, regressions, summary, settings)")
 
 
 # ---------------------------------------------------------------- optional
@@ -324,6 +380,27 @@ def main(argv=None) -> None:
     p.add_argument("--end")
     p.add_argument("--dates", nargs="+")
     p.set_defaults(fn=cmd_align)
+
+    p = sub.add_parser("lead-lag", help="lead-lag correlations + predictive regressions (Stage 4)")
+    p.add_argument("--studies", nargs="+", required=True, help="e.g. nvda_baseline nvda_comparison nvda_crisis")
+    p.add_argument("--instrument", required=True)
+    p.add_argument("--ref", help="reference instrument (default: same; ES for SP500)")
+    p.add_argument("--ref-type", choices=["trade", "mid"], default="trade")
+    p.add_argument("--control", default="ES", help="market control instrument, or 'none'")
+    p.add_argument("--perp-source", choices=["dwellir", "hl_live"], default="dwellir")
+    p.add_argument("--interval", default="1m", choices=["1s", "1m", "5m"])
+    p.add_argument("--freq", default="1min")
+    p.add_argument("--sessions", nargs="+", default=["regular"], choices=["pre", "regular", "post"])
+    p.add_argument("--max-age", default="60s")
+    p.add_argument("--lags", type=int, default=5, help="K: correlations for k = -K..K")
+    p.add_argument("--max-p", type=int, default=5, help="regressions with p = 1..max_p lags")
+    p.add_argument("--exclude-open", action="store_true", help="blank the first 15 regular minutes")
+    p.add_argument("--exclude-close", action="store_true", help="blank the last 15 regular minutes")
+    p.add_argument("--holdout", action="store_true", help="fit development block, evaluate evaluation block")
+    p.add_argument("--retrieval", action="store_true", help="use retrieval dates instead of scored dates")
+    p.add_argument("--n-boot", type=int, default=1000)
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(fn=cmd_lead_lag)
 
     p = sub.add_parser("hl-record", help="optional forward collector (bbo/trades)")
     p.add_argument("--instruments", nargs="+")

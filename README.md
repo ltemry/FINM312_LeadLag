@@ -4,8 +4,8 @@ Do US equity perpetuals (Hyperliquid HIP-3: `xyz:NVDA`, `xyz:TSLA`, `xyz:SP500`)
 lead or lag their US exchange prices, and does that change during major news?
 The full specification is [docs/project_plan.md](docs/project_plan.md).
 
-**Status:** Stages 1–3 of the plan are built: config and guards, collectors, and
-normalize/align. Next up are Stage 4 (`lead_lag.py`) and Stage 5 (`auctions.py`, `overnight.py`).
+**Status:** Stages 1–4 of the plan are built: config and guards, collectors, normalize/align,
+and lead-lag analysis. Next up is Stage 5 (`auctions.py`, `overnight.py`).
 Anthropic (ANT) is deferred: it is marked `deferred: true` in the config, and every collector refuses it.
 
 ## Layout
@@ -26,7 +26,8 @@ src/leadlag/
   collect_databento.py      CME futures through the cost guard
   coverage_report.py        free coverage checks + request manifest
   normalize.py              common schema: ts_utc (available), source_ts_utc, price, price_type
-  align.py                  session grids, as-of joins, quote age, session-safe returns
+  align.py                  session grids, as-of joins, quote age, session-safe returns, ES control
+  lead_lag.py               lead-lag correlations, predictive regressions, holdout, bootstrap
   hl_live.py                optional forward collector (not running by default)
   cli.py                    `leadlag` command
 tests/                      mocked guard tests + alignment/calendar tests (pytest)
@@ -39,7 +40,7 @@ data/                       downloads, ledgers, reports (git-ignored)
 uv venv .venv && uv pip install -e ".[dev]"
 source .venv/bin/activate
 cp .env.example .env        # DWELLIR_API_KEY, DATABENTO_API_KEY, WRDS_USERNAME
-pytest                      # 66 tests, no network
+pytest                      # 79 tests, no network
 ```
 
 ## Studies and dates
@@ -80,7 +81,23 @@ leadlag collect --study panel --sources databento --dry-run # quotes only
 leadlag align --study pilot --instrument TSLA               # perp candles vs TAQ trade bars
 leadlag align --study pilot --instrument TSLA --ref-type mid
 leadlag align --study panel --instrument SP500 --ref ES
+
+# Stage 4: lead-lag (scored dates; results in data/results/<pair>/)
+leadlag lead-lag --studies nvda_baseline nvda_comparison nvda_crisis --instrument NVDA
+leadlag lead-lag --studies panel --instrument TSLA --holdout
+leadlag lead-lag --studies panel --instrument SP500 --ref ES
+leadlag lead-lag --studies panel --instrument TSLA --ref-type mid --exclude-open --exclude-close
 ```
+
+## Lead-lag analysis (Stage 4)
+
+- **Correlation convention:** `rho(k) = Corr(perp_t, ref_{t+k})` for k = −5..+5 minutes. **Positive k means the perp moves first.**
+- **No best-lag picking:** the headline statistic is the predefined asymmetry `A = Σρ(k>0) − Σρ(k<0)`, with a whole-session bootstrap CI. The peak lag is reported, but labelled exploratory.
+- **Predictive regressions in both directions,** with p = 1..5 lags of each venue plus lagged ES returns (`--control ES`, the default for stocks). The test is a session-clustered Wald test that the other venue's lags add nothing beyond the target's own lags. `delta_r2` is the incremental R².
+- **Lags never cross sessions or gaps.** `--exclude-open` / `--exclude-close` blank the first/last 15 regular-session minutes without bridging them.
+- **`--holdout`** (panel): fits on Sep–Oct, evaluates on Nov, and compares against the own-lag baseline (`oos_r2_vs_base` plus a session-bootstrap CI of the loss difference).
+- **Groups with fewer than 10 sessions** (each NVDA window) are flagged `descriptive_only`: report those descriptively, not as tests.
+- **Outputs** go to `data/results/<pair>/`: `describe`, `xcorr`, `asymmetry`, `regressions`, `summary`, `holdout`, and `settings.json` (the exact options used).
 
 ## Spending guards
 
