@@ -8,8 +8,8 @@ import pytest
 from leadlag.auctions import official_prices
 from leadlag.config import Config
 from leadlag.market_calendar import ET
-from leadlag.overnight import (asof_lookup, closing_forecasts, forecast_metrics, opening_forecasts,
-                               post_open_adjustment)
+from leadlag.overnight import (asof_lookup, closing_forecasts, forecast_metrics, forecast_paths,
+                               opening_forecasts, post_open_adjustment)
 
 PREV, DAY = dt.date(2026, 11, 6), dt.date(2026, 11, 9)       # Fri -> Mon (EST)
 C, O, CLOSE_MON = 50.0, 56.0, 57.0
@@ -150,3 +150,10 @@ def test_asof_lookup_never_uses_future_rows():
     s = pd.DataFrame({"ts_utc": pd.to_datetime(["2026-11-09 14:00Z", "2026-11-09 14:02Z"]), "price": [1.0, 2.0]})
     out = asof_lookup(s, pd.Series(pd.to_datetime(["2026-11-09 14:01Z", "2026-11-09 13:59Z"])), "5min", "x")
     assert out["x"].iloc[0] == 1.0 and np.isnan(out["x"].iloc[1])
+
+
+def test_forecast_paths_cover_the_weekend(cfg):
+    """Fri close -> Mon open: perp bars exist every minute, so the path must have no gaps."""
+    pa = forecast_paths(cfg, "NVDA", [DAY])
+    assert pa["Pt"].notna().all() and pa["ts_utc"].min() == et(PREV, 16, 1)
+    assert set(pa["interval"]) == {"postmarket", "overnight", "premarket"}

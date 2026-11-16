@@ -86,7 +86,10 @@ def _bps(a, b):
 def _load(cfg: Config, instrument: str, et_days: list[dt.date], interval: str):
     inst = cfg.instruments[instrument]
     coin, sym = inst["perp"]["coin"], inst["equity"]["taq_sym_root"]
-    perp = N.dwellir_bars(cfg, coin, cfg.utc_days(et_days), interval)
+    # every calendar day in the span, so overnight/weekend periods between a close
+    # and the next open are loaded too (not just the trading days themselves)
+    span = pd.date_range(min(et_days), max(et_days), freq="D").date
+    perp = N.dwellir_bars(cfg, coin, cfg.utc_days(span), interval)
     mid = N.taq_mid(cfg, sym, cfg.trading_days(et_days))
     return perp, mid
 

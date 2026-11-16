@@ -22,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+notebook = ["matplotlib>=3.8", "nbformat>=5.9", "nbclient>=0.10", "ipykernel>=6.29"]
 
 [project.scripts]
 leadlag = "leadlag.cli:main"

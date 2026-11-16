@@ -163,9 +163,11 @@ taq:
   # auction/official prints (collected separately below).
   #   B,W avg price | C cash | G bunched sold | H price variation | I odd lot
   #   M,Q official close/open | N next day | O,5,6 opening/reopening/closing prints
-  #   P prior reference | R seller | T Form T (ext. hours) | U ext. hours out of seq.
-  #   V contingent | Z sold out of sequence | 4 derivatively priced | 7 QCT | 9 corr. close
-  trade_exclude_conditions: "BCGHIMNOPQRTUVWZ45679"
+  #   P prior reference | R seller | U ext. hours out of sequence | V contingent
+  #   Z sold out of sequence | 4 derivatively priced | 7 QCT | 9 corr. close
+  # T (Form T = executed outside regular hours) is KEPT: those are the
+  # pre-market / after-hours trades; sessions are labelled downstream.
+  trade_exclude_conditions: "BCGHIMNOPQRUVWZ45679"
   # Opening/closing/official prints, all exchanges, unfiltered, stored
   # separately from continuous-trading data for auctions.py:
   #   O opening print, Q official open, 6 closing print, M official close, 5 reopening print

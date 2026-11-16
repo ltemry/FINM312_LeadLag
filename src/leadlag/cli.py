@@ -28,6 +28,10 @@ Stage 5: auctions and overnight forecasts
     leadlag overnight --studies nvda_baseline nvda_comparison nvda_crisis --instrument NVDA --paths
     leadlag overnight --studies panel --instrument TSLA
 
+Stage 6: opening/closing windows
+    leadlag windows --studies panel --instrument TSLA
+    leadlag windows --studies panel --instrument SP500 --ref ES
+
 Optional forward sample (not running by default):
     leadlag hl-record --instruments TSLA NVDA SP500
 """
@@ -381,6 +385,57 @@ def cmd_overnight(cfg: Config, a) -> None:
     print(f"\nWrote {out}/")
 
 
+# ---------------------------------------------------------------- stage 6
+def cmd_windows(cfg: Config, a) -> None:
+    import datetime as dt
+
+    import pandas as pd
+
+    from .auction_windows import run_windows
+
+    if cfg.is_deferred(a.instrument):
+        sys.exit(f"{a.instrument} is deferred")
+    res = run_windows(cfg, a.instrument, a.studies, a.ref, a.ref_type, a.max_age, a.n_boot, a.seed)
+    tag = f"windows_{a.instrument}_vs_{a.ref or a.instrument}_{a.ref_type}"
+    out = cfg.data_dir / "results" / tag
+    out.mkdir(parents=True, exist_ok=True)
+    res["frame"].to_parquet(out / "frame.parquet", index=False)
+    for k, t in res.items():
+        if k != "frame":
+            t.to_csv(out / f"{k}.csv", index=False)
+    (out / "settings.json").write_text(json.dumps(
+        {k: v for k, v in vars(a).items() if k != "fn"} |
+        {"run_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+         "windows": "open 09:00-10:00, close 15:30-16:30 ET (boundary +/- 30 min)"}, indent=1, default=str))
+    pd.set_option("display.width", 220)
+    d = res["describe"][["window", "side", "n_sessions", "paired_returns", "contemporaneous_corr",
+                         "sufficiently_populated"]]
+    a_ = res["asymmetry"][["window", "side", "A", "ci_lo", "ci_hi"]]
+    print("Lead-lag inside each window (A = sum rho(k>0) - sum rho(k<0); positive = perp first):")
+    print(d.merge(a_, on=["window", "side"]).round(3).to_string(index=False))
+    ch = res["event_changes"]
+    cols = [c for c in ch.columns if c.endswith("_bps")]
+    print("\nAround each boundary (median across days, bps; offset 0 = last minute before the boundary):")
+    print(ch.groupby("window")[cols].median().round(2).T.to_string())
+    print("\nShare of the +15 min move done by +1 / +5 min (median; days with >= 5 bps move):")
+    print(res["adjustment"].round(2).to_string(index=False))
+    print(f"\nWrote {out}/")
+
+
+def cmd_robustness(cfg: Config, a) -> None:
+    import pandas as pd
+
+    from .robustness import run_grid
+
+    t = run_grid(cfg, a.pairs, None, a.n_boot, a.seed)
+    out = cfg.data_dir / "results" / "robustness.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    t.to_csv(out, index=False)
+    pd.set_option("display.width", 220)
+    print(t.drop(columns=["control", "freq"]).round(4).to_string(index=False))
+    print(f"\nWrote {out}")
+
+
 # ---------------------------------------------------------------- optional
 def cmd_hl_record(cfg: Config, a) -> None:
     from .hl_live import LiveRecorder
@@ -505,6 +560,22 @@ def main(argv=None) -> None:
     p.add_argument("--cash-max-age")
     p.add_argument("--paths", action="store_true", help="also write minute-by-minute forecast paths")
     p.set_defaults(fn=cmd_overnight)
+
+    p = sub.add_parser("windows", help="opening/closing boundary windows (Stage 6, Module C)")
+    p.add_argument("--studies", nargs="+", required=True)
+    p.add_argument("--instrument", required=True)
+    p.add_argument("--ref", help="reference instrument (default: same; ES for SP500)")
+    p.add_argument("--ref-type", choices=["mid", "trade"], default="mid")
+    p.add_argument("--max-age", default="60s")
+    p.add_argument("--n-boot", type=int, default=1000)
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(fn=cmd_windows)
+
+    p = sub.add_parser("robustness", help="fixed robustness grid for the core lead-lag result")
+    p.add_argument("--pairs", nargs="+", help="subset of pair names (default: all)")
+    p.add_argument("--n-boot", type=int, default=500)
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(fn=cmd_robustness)
 
     p = sub.add_parser("hl-record", help="optional forward collector (bbo/trades)")
     p.add_argument("--instruments", nargs="+")

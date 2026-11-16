@@ -4,9 +4,8 @@ Do US equity perpetuals (Hyperliquid HIP-3: `xyz:NVDA`, `xyz:TSLA`, `xyz:SP500`)
 lead or lag their US exchange prices, and does that change during major news?
 The full specification is [docs/project_plan.md](docs/project_plan.md).
 
-**Status:** Stages 1–5 of the plan are built: config and guards, collectors, normalize/align,
-lead-lag analysis, and opening/closing auction forecasts. Next up are Stage 6 (`auction_windows.py`)
-and Stage 7 (`results.ipynb`).
+**Status:** all seven stages of the plan are built and run on the full sample. Results, figures
+and conclusions are in [`results.ipynb`](results.ipynb).
 Anthropic (ANT) is deferred: it is marked `deferred: true` in the config, and every collector refuses it.
 
 ## Layout
@@ -31,6 +30,9 @@ src/leadlag/
   lead_lag.py               lead-lag correlations, predictive regressions, holdout, bootstrap
   auctions.py               official primary-exchange open/close from TAQ auction prints
   overnight.py              opening/closing forecasts vs benchmarks, post-open adjustment, paths
+  auction_windows.py        opening/closing boundary windows: in-window lead-lag, event profiles
+  robustness.py             fixed robustness grid (midpoints, quote age, excl. open/close, 5-min)
+  plots.py                  notebook figures
   hl_live.py                optional forward collector (not running by default)
   cli.py                    `leadlag` command
 tests/                      mocked guard tests + alignment/calendar tests (pytest)
@@ -43,7 +45,7 @@ data/                       downloads, ledgers, reports (git-ignored)
 uv venv .venv && uv pip install -e ".[dev]"
 source .venv/bin/activate
 cp .env.example .env        # DWELLIR_API_KEY, DATABENTO_API_KEY, WRDS_USERNAME
-pytest                      # 90 tests, no network
+pytest                      # 97 tests, no network
 ```
 
 ## Studies and dates
@@ -91,6 +93,20 @@ leadlag lead-lag --studies panel --instrument TSLA --holdout
 leadlag lead-lag --studies panel --instrument SP500 --ref ES
 leadlag lead-lag --studies panel --instrument TSLA --ref-type mid --exclude-open --exclude-close
 ```
+
+## Opening/closing windows, robustness, and the results notebook (Stages 6–7)
+
+```bash
+leadlag windows --studies panel --instrument TSLA                 # 09:00-10:00 and 15:30-16:30 ET
+leadlag windows --studies panel --instrument SP500 --ref ES
+leadlag robustness                                               # writes data/results/robustness.csv
+uv pip install -e ".[notebook]"                                  # matplotlib + Jupyter kernel
+jupyter nbconvert --to notebook --execute --inplace results.ipynb   # or open it in Jupyter / VS Code
+```
+
+- **Windows** run from 30 minutes before to 30 minutes after each boundary. Pre and post sides are separate sessions, so no return or lag crosses the auction, and the auction print is a separate event.
+- **Window outputs:** in-window lead-lag tests, minute-by-minute event profiles (moves, basis, spreads, quote ages, perp activity), and moves at +1/+5/+15 minutes.
+- **The notebook only presents results;** it reads `data/results/` and needs the data to re-run. The committed copy includes its outputs.
 
 ## Auction and overnight forecasts (Stage 5)
 
@@ -146,6 +162,7 @@ leadlag overnight --studies panel --instrument TSLA --paths
 
 ## Known data gaps (checked 2026-11-15)
 
+- **TAQ trade buckets** exclude prints that don't set the last-sale price (late or out-of-sequence, average-price, odd-lot and similar). Form T extended-hours trades are kept.
 - **WRDS has no `complete_nbbo` table for 2026-11-11 yet** (raw `cqm`/`nbbom` exist; `wct` is also missing). NBBO for that day is recorded as `unavailable`, but trades and auction prints are still collected. Re-run `leadlag collect` once WRDS builds the table.
 - **TSLA single-stock futures:** the Databento symbol is unresolved (`symbol: null`). Use `databento-resolve`, then pin one expiry.
 - **ES:** fixed at `ESZ6` for all windows. ESU6 expired on 2026-09-18.
