@@ -23,6 +23,11 @@ Stage 4: lead-lag
     leadlag lead-lag --studies panel --instrument TSLA --holdout
     leadlag lead-lag --studies panel --instrument SP500 --ref ES --control none
 
+Stage 5: auctions and overnight forecasts
+    leadlag auctions --study nvda_crisis --instrument NVDA
+    leadlag overnight --studies nvda_baseline nvda_comparison nvda_crisis --instrument NVDA --paths
+    leadlag overnight --studies panel --instrument TSLA
+
 Optional forward sample (not running by default):
     leadlag hl-record --instruments TSLA NVDA SP500
 """
@@ -293,6 +298,89 @@ def cmd_lead_lag(cfg: Config, a) -> None:
     print(f"\nWrote {out}/ (describe, xcorr, asymmetry, regressions, summary, settings)")
 
 
+# ---------------------------------------------------------------- stage 5
+def cmd_auctions(cfg: Config, a) -> None:
+    import pandas as pd
+
+    from .auctions import official_prices
+
+    days = cfg.trading_days(cfg.study_dates(a.study, a.start, a.end, a.dates, which="retrieval"))
+    t = official_prices(cfg, a.instrument, days)
+    pd.set_option("display.width", 200)
+    t["open_et"] = t["open_ts_utc"].dt.tz_convert("America/New_York").dt.strftime("%H:%M:%S.%f").str[:12]
+    t["close_et"] = t["close_ts_utc"].dt.tz_convert("America/New_York").dt.strftime("%H:%M:%S.%f").str[:12]
+    print(t[["et_date", "open_price", "open_et", "open_source", "close_price", "close_et", "close_source",
+             "open_vs_cross_bps", "close_vs_cross_bps", "halt_reopen_prints"]].to_string(index=False))
+
+
+def cmd_overnight(cfg: Config, a) -> None:
+    import datetime as dt
+
+    import pandas as pd
+
+    from .auctions import official_prices
+    from .overnight import (closing_forecasts, forecast_metrics, forecast_paths, opening_forecasts,
+                            post_open_adjustment)
+
+    if cfg.is_deferred(a.instrument):
+        sys.exit(f"{a.instrument} is deferred")
+    o = cfg.source_cfg("overnight")
+    kw = dict(perp_max_age=a.perp_max_age or o.get("perp_max_age", "5min"),
+              cash_max_age=a.cash_max_age or o.get("cash_max_age", "60s"))
+    frames_o, frames_c, frames_a, frames_p, info = [], [], [], [], {}
+    for study in a.studies:
+        scored = cfg.trading_days(cfg.study_dates(study, which="scored"))
+        fo, io = opening_forecasts(cfg, a.instrument, scored, o.get("open_cutoffs"), **kw)
+        fc, ic = closing_forecasts(cfg, a.instrument, scored, o.get("close_cutoffs"),
+                                   o.get("close_anchor", "15:00"), **kw)
+        adj = post_open_adjustment(cfg, a.instrument, scored, o.get("adjustment_minutes", [1, 5, 15]), **kw)
+        frames_o.append(fo.assign(period=study))
+        frames_c.append(fc.assign(period=study))
+        frames_a.append(adj.assign(period=study))
+        if a.paths:
+            frames_p.append(forecast_paths(cfg, a.instrument, scored, **kw).assign(period=study))
+        info[study] = {"open": io, "close": ic}
+    fo, fc, adj = (pd.concat(f, ignore_index=True) for f in (frames_o, frames_c, frames_a))
+    # one row per open target even if two studies share a date
+    fo = fo.drop_duplicates(["et_date", "cutoff"])
+    fc = fc.drop_duplicates(["et_date", "cutoff"])
+    adj = adj.drop_duplicates(["et_date"])
+    mo = forecast_metrics(fo, {"perp": "err_bps_perp", "no_change": "err_bps_nochange",
+                               "premarket_mid": "err_bps_premkt_mid"},
+                          {"perp": "dir_hit_perp", "premarket_mid": "dir_hit_mid"})
+    mc = forecast_metrics(fc, {"perp": "err_bps_perp", "cash_mid": "err_bps_cash_mid",
+                               "anchor_no_change": "err_bps_anchor_nochange"},
+                          {"perp": "dir_hit_perp", "cash_mid": "dir_hit_mid"})
+    out = cfg.data_dir / "results" / f"overnight_{a.instrument}"
+    out.mkdir(parents=True, exist_ok=True)
+    days = sorted(set(fo["et_date"]) | set(fo["prev_date"]))
+    official_prices(cfg, a.instrument, days).to_csv(out / "official_prices.csv", index=False)
+    for name, t in (("open_forecasts", fo), ("close_forecasts", fc), ("open_metrics", mo),
+                    ("close_metrics", mc), ("post_open_adjustment", adj)):
+        t.to_csv(out / f"{name}.csv", index=False)
+    if frames_p:
+        pd.concat(frames_p, ignore_index=True).drop_duplicates(["et_date", "ts_utc"]).to_csv(
+            out / "open_paths.csv", index=False)
+    (out / "settings.json").write_text(json.dumps(
+        {"studies": a.studies, "instrument": a.instrument, **kw, "config": o, "info": info,
+         "run_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+         "perp_price_type": "trade (Dwellir 1m candle close)"}, indent=1, default=str))
+
+    pd.set_option("display.width", 220)
+    cols = ["cutoff", "forecast", "n_matched", "n_missing_or_stale", "MAE_bps", "RMSE_bps", "bias_bps",
+            "direction_accuracy", "mean_abs_err_diff_perp_minus_this_bps", "share_perp_better"]
+    print(f"Opening forecasts: {fo['et_date'].nunique()} overnight targets (official {a.instrument} opens)")
+    print(mo[[c for c in cols if c in mo]].round(3).to_string(index=False))
+    print(f"\nClosing forecasts: {fc['et_date'].nunique()} closes, anchored at {o.get('close_anchor', '15:00')} ET")
+    print(mc[[c for c in cols if c in mc]].round(3).to_string(index=False))
+    a_cols = [c for c in adj.columns if c.startswith(("cash_ret_", "perp_ret_", "basis_change_"))]
+    print("\nAfter the open (median across days, bps):")
+    print(adj[a_cols].median().round(2).to_string())
+    if (mo["descriptive_only"]).any():
+        print(f"\nNote: fewer than 20 matched dates per cutoff -> descriptive only, not a forecasting test.")
+    print(f"\nWrote {out}/")
+
+
 # ---------------------------------------------------------------- optional
 def cmd_hl_record(cfg: Config, a) -> None:
     from .hl_live import LiveRecorder
@@ -401,6 +489,22 @@ def main(argv=None) -> None:
     p.add_argument("--n-boot", type=int, default=1000)
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(fn=cmd_lead_lag)
+
+    p = sub.add_parser("auctions", help="official primary-exchange open/close prices (TAQ)")
+    p.add_argument("--study")
+    p.add_argument("--instrument", required=True)
+    p.add_argument("--start")
+    p.add_argument("--end")
+    p.add_argument("--dates", nargs="+")
+    p.set_defaults(fn=cmd_auctions)
+
+    p = sub.add_parser("overnight", help="opening/closing auction forecasts (Stage 5, Module B)")
+    p.add_argument("--studies", nargs="+", required=True)
+    p.add_argument("--instrument", required=True)
+    p.add_argument("--perp-max-age")
+    p.add_argument("--cash-max-age")
+    p.add_argument("--paths", action="store_true", help="also write minute-by-minute forecast paths")
+    p.set_defaults(fn=cmd_overnight)
 
     p = sub.add_parser("hl-record", help="optional forward collector (bbo/trades)")
     p.add_argument("--instruments", nargs="+")

@@ -207,6 +207,15 @@ hyperliquid:
     channels: [bbo, trades]
     flush_seconds: 60
 
+overnight:
+  # Module B: opening/closing forecasts (fixed before looking at results)
+  open_cutoffs: ["08:00", "09:00", "09:25", "09:29"]     # ET, next trading day
+  close_cutoffs: ["15:30", "15:50", "15:59"]             # ET, same day
+  close_anchor: "15:00"                                   # common earlier anchor for closing forecasts
+  perp_max_age: "5min"        # last perp bar older than this at a cutoff -> forecast missing
+  cash_max_age: "60s"         # TAQ midpoint older than this -> benchmark missing
+  adjustment_minutes: [1, 5, 15]
+
 databento:
   # Zero incremental cost policy: every request is quoted with
   # metadata.get_cost immediately before download and allowed only if the

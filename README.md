@@ -4,8 +4,9 @@ Do US equity perpetuals (Hyperliquid HIP-3: `xyz:NVDA`, `xyz:TSLA`, `xyz:SP500`)
 lead or lag their US exchange prices, and does that change during major news?
 The full specification is [docs/project_plan.md](docs/project_plan.md).
 
-**Status:** Stages 1–4 of the plan are built: config and guards, collectors, normalize/align,
-and lead-lag analysis. Next up is Stage 5 (`auctions.py`, `overnight.py`).
+**Status:** Stages 1–5 of the plan are built: config and guards, collectors, normalize/align,
+lead-lag analysis, and opening/closing auction forecasts. Next up are Stage 6 (`auction_windows.py`)
+and Stage 7 (`results.ipynb`).
 Anthropic (ANT) is deferred: it is marked `deferred: true` in the config, and every collector refuses it.
 
 ## Layout
@@ -28,6 +29,8 @@ src/leadlag/
   normalize.py              common schema: ts_utc (available), source_ts_utc, price, price_type
   align.py                  session grids, as-of joins, quote age, session-safe returns, ES control
   lead_lag.py               lead-lag correlations, predictive regressions, holdout, bootstrap
+  auctions.py               official primary-exchange open/close from TAQ auction prints
+  overnight.py              opening/closing forecasts vs benchmarks, post-open adjustment, paths
   hl_live.py                optional forward collector (not running by default)
   cli.py                    `leadlag` command
 tests/                      mocked guard tests + alignment/calendar tests (pytest)
@@ -40,7 +43,7 @@ data/                       downloads, ledgers, reports (git-ignored)
 uv venv .venv && uv pip install -e ".[dev]"
 source .venv/bin/activate
 cp .env.example .env        # DWELLIR_API_KEY, DATABENTO_API_KEY, WRDS_USERNAME
-pytest                      # 79 tests, no network
+pytest                      # 90 tests, no network
 ```
 
 ## Studies and dates
@@ -88,6 +91,22 @@ leadlag lead-lag --studies panel --instrument TSLA --holdout
 leadlag lead-lag --studies panel --instrument SP500 --ref ES
 leadlag lead-lag --studies panel --instrument TSLA --ref-type mid --exclude-open --exclude-close
 ```
+
+## Auction and overnight forecasts (Stage 5)
+
+```bash
+leadlag auctions --study nvda_crisis --instrument NVDA          # official opens/closes, with timestamps
+leadlag overnight --studies nvda_baseline nvda_comparison nvda_crisis --instrument NVDA --paths
+leadlag overnight --studies panel --instrument TSLA --paths
+```
+
+- **Targets** are the official Nasdaq open/close records (`Q` / `M`) on the primary exchange; the cross prints (`O` / `6`) are the flagged fallback. Never first/last trades or bar OHLC.
+- **Each target keeps its own timestamp** (the opening cross can print at 09:30:08). Every feature must be available at or before its cutoff, and the cutoff must be strictly before the target; violating rows are dropped and counted.
+- **Opening:** `implied_open(t) = C × P(t) / P0` at 08:00, 09:00, 09:25 and 09:29 ET, compared with no change (C) and the TAQ premarket midpoint at the same cutoff.
+- **Closing:** anchored at 15:00 ET, `implied_close(t) = A_cash × P(t) / A_perp` at 15:30, 15:50 and 15:59, compared with the contemporaneous cash midpoint and no change.
+- **Metrics:** MAE, RMSE, bias and direction accuracy on matched dates only (all forecasts present), plus paired error differences. Missing or stale cases are counted separately. Fewer than 20 matched dates is flagged descriptive-only (each NVDA window).
+- **Also written:** post-open adjustment at 1/5/15 minutes (cash return, perp return, basis change), and minute-by-minute forecast paths (`--paths`) for the plots in `results.ipynb`.
+- **Price types:** perp prices are trade-based (Dwellir candle closes); cash benchmarks are NBBO midpoints. Outputs are in `data/results/overnight_<instrument>/`.
 
 ## Lead-lag analysis (Stage 4)
 
