@@ -48,6 +48,23 @@ cp .env.example .env        # DWELLIR_API_KEY, DATABENTO_API_KEY, WRDS_USERNAME
 pytest                      # 97 tests, no network
 ```
 
+## For teammates: running without a Dwellir key
+
+The Dwellir perp candles for every study window are **committed** in `data/raw/dwellir/` (1-minute candles for `xyz:NVDA`, `xyz:TSLA` and `xyz:SP500`, Sep 18 – Nov 14, 2026). The collector skips any file that already exists, so after cloning you never call Dwellir's API. Leave `entitlement_verified: false` and no `DWELLIR_API_KEY` is needed.
+
+The other sources are **not** committed and must be pulled with your own access:
+- **TAQ** (WRDS-licensed): needs your WRDS account. Set `WRDS_USERNAME` in `.env`.
+- **ES futures** (Databento): needs `DATABENTO_API_KEY`. Every request is quoted at $0 before downloading.
+
+```bash
+git clone https://github.com/ltemry/FINM312_LeadLag.git && cd FINM312_LeadLag
+uv venv .venv && uv pip install -e ".[dev,notebook]" && source .venv/bin/activate
+cp .env.example .env            # add WRDS_USERNAME and DATABENTO_API_KEY (no Dwellir key needed)
+for s in nvda_crisis nvda_comparison nvda_baseline panel; do leadlag collect --study $s; done
+```
+
+Dwellir lines in that output should all say `skipped`. Then run the analysis commands below, or open `results.ipynb`.
+
 ## Studies and dates
 
 Dates are US/Eastern. Each study has `scored` dates, which count in the analysis,

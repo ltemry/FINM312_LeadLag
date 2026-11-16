@@ -1,4 +1,10 @@
-data/
+# Downloaded data stays local, EXCEPT the Dwellir perp candles, which are
+# committed so teammates can run the analysis without a Dwellir API key.
+# TAQ (WRDS-licensed), Databento, ledgers, reports and results stay out.
+data/*
+!data/raw/
+data/raw/*
+!data/raw/dwellir/
 .env
 .venv/
 __pycache__/
