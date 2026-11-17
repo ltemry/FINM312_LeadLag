@@ -39,7 +39,23 @@ tests/                      mocked guard tests + alignment/calendar tests (pytes
 data/                       downloads, ledgers, reports (git-ignored)
 ```
 
-## Setup
+## Run everything (doit)
+
+```bash
+cp .env.example .env        # WRDS_USERNAME, DATABENTO_API_KEY (Dwellir key optional, see below)
+uv run doit                 # tests -> collect -> lead-lag -> overnight -> windows -> robustness -> notebook
+```
+
+`uv run` creates `.venv` from `uv.lock` (including `doit`, `pytest` and the notebook packages) and `dodo.py` runs every stage in order. Collection is always safe to repeat: finished files are skipped, so a second run downloads nothing. The analysis stages only re-run when the code, `config/config.yaml` or the raw data changed. Then it re-executes `results.ipynb` in place.
+
+```bash
+uv run doit list            # the stages
+uv run doit collect=0       # analyse what is on disk; no WRDS/Databento connection
+uv run doit lead_lag        # one stage (sub-tasks: lead_lag:TSLA_trade, windows:SP500, ...)
+uv run doit forget && uv run doit   # force all stages to re-run
+```
+
+## Setup (manual)
 
 ```bash
 uv venv .venv && uv pip install -e ".[dev]"
@@ -58,12 +74,11 @@ The other sources are **not** committed and must be pulled with your own access:
 
 ```bash
 git clone https://github.com/ltemry/FINM312_LeadLag.git && cd FINM312_LeadLag
-uv venv .venv && uv pip install -e ".[dev,notebook]" && source .venv/bin/activate
 cp .env.example .env            # add WRDS_USERNAME and DATABENTO_API_KEY (no Dwellir key needed)
-for s in nvda_crisis nvda_comparison nvda_baseline panel; do leadlag collect --study $s; done
+uv run doit                     # collect (Dwellir is skipped) + every analysis stage + notebook
 ```
 
-Dwellir lines in that output should all say `skipped`. Then run the analysis commands below, or open `results.ipynb`.
+Dwellir lines in the collect output should all say `skipped`. To run step by step instead, see the commands below.
 
 ## Studies and dates
 
