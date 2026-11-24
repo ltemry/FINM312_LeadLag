@@ -1,6 +1,7 @@
 """Run the whole pipeline with doit:  uv run doit
 
-    uv run doit                 # tests -> collect -> lead-lag -> overnight -> windows -> robustness -> notebook
+    uv run doit                 # tests -> collect -> lead-lag -> significance -> overnight -> windows
+                                #   -> robustness -> notebook
     uv run doit collect=0       # skip downloading; analyse the data already on disk
     uv run doit list            # show the tasks
     uv run doit lead_lag        # run one stage (plus whatever it depends on)
@@ -30,7 +31,8 @@ COLLECT_STUDIES = ["nvda_crisis", "nvda_comparison", "nvda_baseline", "panel"]
 NVDA_STUDIES = "nvda_baseline nvda_comparison nvda_crisis"
 
 DOIT_CONFIG = {
-    "default_tasks": ["test", "collect", "lead_lag", "overnight", "windows", "robustness", "notebook"],
+    "default_tasks": ["test", "collect", "lead_lag", "significance", "overnight", "windows", "robustness",
+                      "notebook"],
     "verbosity": 2,              # stream output live (and let WRDS ask for a password)
     "dep_file": str(ROOT / ".doit.db"),
     "backend": "json",
@@ -142,6 +144,13 @@ def task_windows():
         yield t
 
 
+def task_significance():
+    """Formal tests that the reference leads the perp at 1 minute (regular + extended hours)."""
+    return _analysis("significance", [_leadlag("significance")],
+                     [RESULTS / "significance" / f for f in ("tests.csv", "headline.csv", "per_session.csv",
+                                                             "activity.csv")])
+
+
 def task_robustness():
     """Stage 7: fixed robustness grid for the core lead-lag result."""
     return _analysis("robustness", [_leadlag("robustness")], [RESULTS / "robustness.csv"])
@@ -164,11 +173,11 @@ def task_notebook():
     deps = [str(RESULTS / out / "summary.csv") for _, out in LEAD_LAG.values()]
     deps += [str(RESULTS / f"overnight_{i}" / "open_metrics.csv") for i in OVERNIGHT]
     deps += [str(RESULTS / out / "event_profile.csv") for _, out in WINDOWS.values()]
-    deps += [str(RESULTS / "robustness.csv")]
+    deps += [str(RESULTS / "robustness.csv"), str(RESULTS / "significance" / "tests.csv")]
     return {
         "actions": [(_execute_notebook, [str(nb)])],
         "file_dep": deps + [str(ROOT / "src" / "leadlag" / "plots.py")],
-        "task_dep": ["lead_lag", "overnight", "windows", "robustness"],
+        "task_dep": ["lead_lag", "significance", "overnight", "windows", "robustness"],
         "verbosity": 2,
     }
 

@@ -123,8 +123,9 @@ def align_pair(grid: pd.DataFrame, ref: pd.DataFrame, perp: pd.DataFrame, max_ag
 
     ref_exact = is_bars(ref) if ref_exact is None else ref_exact
     perp_exact = is_bars(perp) if perp_exact is None else perp_exact
-    out = asof_join(grid, ref, "ref", max_age, exact=ref_exact)
-    out = asof_join(out, perp, "perp", max_age, exact=perp_exact)
+    activity = ("volume", "n_trades")               # bar activity, kept for staleness checks
+    out = asof_join(grid, ref, "ref", max_age, exact=ref_exact, extra_cols=activity)
+    out = asof_join(out, perp, "perp", max_age, exact=perp_exact, extra_cols=activity)
     out["ref_ret"] = session_returns(out, "ref_price", freq)
     out["perp_ret"] = session_returns(out, "perp_price", freq)
     out["both_valid"] = out["ref_ret"].notna() & out["perp_ret"].notna()

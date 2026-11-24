@@ -32,6 +32,10 @@ Stage 6: opening/closing windows
     leadlag windows --studies panel --instrument TSLA
     leadlag windows --studies panel --instrument SP500 --ref ES
 
+Stage 7: significance and robustness
+    leadlag significance            # bootstrap / sign / Wilcoxon / Granger / gap-closing / holdout tests
+    leadlag robustness
+
 Optional forward sample (not running by default):
     leadlag hl-record --instruments TSLA NVDA SP500
 """
@@ -274,6 +278,8 @@ def cmd_lead_lag(cfg: Config, a) -> None:
         res["holdout"] = pd.DataFrame(rows)
 
     tag = f"{a.instrument}_vs_{a.ref or a.instrument}_{a.ref_type}_{a.freq}"
+    if list(a.sessions) != ["regular"]:          # never overwrite the regular-session results
+        tag += "_" + "-".join(a.sessions)
     out = cfg.data_dir / "results" / tag
     out.mkdir(parents=True, exist_ok=True)
     for name, t in res.items():
@@ -420,6 +426,42 @@ def cmd_windows(cfg: Config, a) -> None:
     print("\nShare of the +15 min move done by +1 / +5 min (median; days with >= 5 bps move):")
     print(res["adjustment"].round(2).to_string(index=False))
     print(f"\nWrote {out}/")
+
+
+def cmd_significance(cfg: Config, a) -> None:
+    import datetime as dt
+
+    import pandas as pd
+
+    from .significance import headline, run_significance
+
+    sets = [("regular",)] + ([] if a.regular_only else [("pre", "post")])
+    res = run_significance(cfg, a.pairs, sets, a.n_boot, a.seed)
+    out = cfg.data_dir / "results" / "significance"
+    out.mkdir(parents=True, exist_ok=True)
+    for k, t in res.items():
+        t.to_csv(out / f"{k}.csv", index=False)
+    head = headline(res["tests"])
+    head.to_csv(out / "headline.csv", index=False)
+    (out / "settings.json").write_text(json.dumps(
+        {k: v for k, v in vars(a).items() if k != "fn"} |
+        {"run_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+         "convention": "rho(k) = Corr(perp_t, ref_{t+k}); A < 0 and D1 < 0 mean the reference leads"},
+        indent=1, default=str))
+    pd.set_option("display.width", 220, "display.max_colwidth", 70)
+    t = res["tests"]
+    cols = ["pair", "session", "test", "estimate", "ci_lo", "ci_hi", "p_two_sided", "p_holm", "n_sessions"]
+    print("Does the reference market lead the perp at 1 minute? (two-sided p; Holm across pairs)\n")
+    print(t.loc[t.session == "regular", cols].round(4).to_string(index=False))
+    if (t.session != "regular").any():
+        print("\nExtended hours (pre / post):")
+        print(t.loc[t.session != "regular", cols].round(4).to_string(index=False))
+    a_ = res["activity"]
+    if len(a_):
+        print("\nStale-price check: asymmetry keeping only actively traded perp minutes:")
+        print(a_.loc[a_.test == "asymmetry_A", ["pair", "filter", "min_trades_per_bar", "share_kept", "estimate",
+                                                 "ci_lo", "ci_hi", "p_two_sided"]].round(4).to_string(index=False))
+    print(f"\nWrote {out}/ (tests, headline, per_session, activity, settings)")
 
 
 def cmd_robustness(cfg: Config, a) -> None:
@@ -576,6 +618,13 @@ def main(argv=None) -> None:
     p.add_argument("--n-boot", type=int, default=500)
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(fn=cmd_robustness)
+
+    p = sub.add_parser("significance", help="formal tests that the reference leads the perp at 1 minute")
+    p.add_argument("--pairs", nargs="+", help="subset of pair names (default: all)")
+    p.add_argument("--regular-only", action="store_true", help="skip the pre/post extended-hours sessions")
+    p.add_argument("--n-boot", type=int, default=10000)
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(fn=cmd_significance)
 
     p = sub.add_parser("hl-record", help="optional forward collector (bbo/trades)")
     p.add_argument("--instruments", nargs="+")

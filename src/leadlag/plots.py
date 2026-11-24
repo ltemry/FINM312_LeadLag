@@ -167,3 +167,27 @@ def event_path(perp: pd.Series, cash: pd.Series, marks: dict[str, tuple], title:
     ax.set_title(title, fontsize=11.5)
     fig.tight_layout()
     return fig
+
+
+def session_dots(panels: dict[str, pd.DataFrame], y: str, title: str, ylabel: str):
+    """One dot per trading day (chronological), small multiples by pair, with the count of
+    days on each side of zero in each panel title. One series per panel, so no legend."""
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=(3.9 * n, 3.2), sharey=True, squeeze=False)
+    for ax, (name, t) in zip(axes[0], panels.items()):
+        t = t.sort_values("et_date").reset_index(drop=True)
+        v = t[y].to_numpy(float)
+        ax.plot(np.arange(len(v)), v, "o", color=SERIES[0], ms=MS, zorder=3)
+        _zero(ax)
+        m = np.nanmean(v)
+        ax.axhline(m, color=INK2, lw=1.0, ls=(0, (4, 3)), zorder=2)        # dashed = mean (named in title)
+        below = int((v < 0).sum())
+        ax.set_title(f"{name}\n{below} of {np.isfinite(v).sum()} days below zero · mean (dashed) {m:+.3f}",
+                     fontsize=10)
+        ticks = np.unique(np.linspace(0, len(v) - 1, min(4, len(v))).round().astype(int))
+        ax.set_xticks(ticks, [pd.Timestamp(t.at[i, "et_date"]).strftime("%b %d") for i in ticks])
+        ax.grid(axis="x", visible=False)
+    axes[0][0].set_ylabel(ylabel)
+    fig.suptitle(title, x=0.01, ha="left", fontsize=11.5, fontweight="bold")
+    fig.tight_layout()
+    return fig

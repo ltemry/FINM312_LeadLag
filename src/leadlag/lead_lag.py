@@ -91,6 +91,20 @@ def _boot_counts(n_sessions: int, n_boot: int, seed: int) -> np.ndarray:
     return np.stack([np.bincount(r, minlength=n_sessions) for r in draws]).astype(float)
 
 
+def boot_p_value(boot: np.ndarray, null: float = 0.0) -> float:
+    """Two-sided percentile-bootstrap p-value for H0: statistic = `null`.
+
+    The smallest alpha at which the equal-tailed (1 - alpha) percentile CI excludes
+    the null: 2 * min(P*(stat <= null), P*(stat >= null)). Floored at 1/B, so
+    with B draws a reported p of 1/B means "p < 1/B"."""
+    b = np.asarray(boot, float)
+    b = b[np.isfinite(b)]
+    if b.size == 0:
+        return np.nan
+    p = 2 * min((b <= null).mean(), (b >= null).mean())
+    return float(min(1.0, max(p, 1.0 / b.size)))
+
+
 def cross_correlation(df: pd.DataFrame, x: str = "perp_ret", y: str = "ref_ret",
                       lags: Sequence[int] = DEFAULT_LAGS, n_boot: int = 1000, seed: int = 0,
                       ci: float = 0.95, freq: str = "1min") -> tuple[pd.DataFrame, dict]:
@@ -124,7 +138,7 @@ def cross_correlation(df: pd.DataFrame, x: str = "perp_ret", y: str = "ref_ret",
         if pos:
             a_boot = np.nansum(boot[:, pos], axis=1) - np.nansum(boot[:, neg], axis=1)
             asym.update(ci_lo=float(np.nanquantile(a_boot, lo_q)), ci_hi=float(np.nanquantile(a_boot, hi_q)),
-                        share_boot_positive=float((a_boot > 0).mean()))
+                        share_boot_positive=float((a_boot > 0).mean()), p_boot=boot_p_value(a_boot))
     else:
         out["ci_lo"] = out["ci_hi"] = np.nan
     peak = out.loc[out["rho"].abs().idxmax()] if out["rho"].notna().any() else None
@@ -299,6 +313,12 @@ def holdout_forecast(df: pd.DataFrame, dev_mask: pd.Series, eval_mask: pd.Series
         boot = (w @ sums) / (w @ cnts)
         out["loss_diff_ci_lo_bps2"], out["loss_diff_ci_hi_bps2"] = (
             float(v) for v in np.quantile(boot, [0.025, 0.975]))
+        out["p_boot"] = boot_p_value(boot)                       # H0: mean loss difference = 0
+        # Diebold-Mariano style test on per-session mean loss differences (sessions independent)
+        per = sums / np.maximum(cnts, 1)
+        se = per.std(ddof=1) / np.sqrt(len(per))
+        out["dm_t"] = float(per.mean() / se) if se > 0 else np.nan
+        out["p_dm"] = float(2 * stats.t.sf(abs(out["dm_t"]), len(per) - 1)) if se > 0 else np.nan
     out["descriptive_only"] = out["eval_sessions"] < MIN_SESSIONS_FOR_INFERENCE
     return out
 

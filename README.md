@@ -43,7 +43,7 @@ data/                       downloads, ledgers, reports (git-ignored)
 
 ```bash
 cp .env.example .env        # WRDS_USERNAME, DATABENTO_API_KEY (Dwellir key optional, see below)
-uv run doit                 # tests -> collect -> lead-lag -> overnight -> windows -> robustness -> notebook
+uv run doit                 # tests -> collect -> lead-lag -> significance -> overnight -> windows -> robustness -> notebook
 ```
 
 `uv run` creates `.venv` from `uv.lock` (including `doit`, `pytest` and the notebook packages) and `dodo.py` runs every stage in order. Collection is always safe to repeat: finished files are skipped, so a second run downloads nothing. The analysis stages only re-run when the code, `config/config.yaml` or the raw data changed. Then it re-executes `results.ipynb` in place.
@@ -61,7 +61,7 @@ uv run doit forget && uv run doit   # force all stages to re-run
 uv venv .venv && uv pip install -e ".[dev]"
 source .venv/bin/activate
 cp .env.example .env        # DWELLIR_API_KEY, DATABENTO_API_KEY, WRDS_USERNAME
-pytest                      # 97 tests, no network
+pytest                      # 103 tests, no network
 ```
 
 ## For teammates: running without a Dwellir key
@@ -131,6 +131,7 @@ leadlag lead-lag --studies panel --instrument TSLA --ref-type mid --exclude-open
 ```bash
 leadlag windows --studies panel --instrument TSLA                 # 09:00-10:00 and 15:30-16:30 ET
 leadlag windows --studies panel --instrument SP500 --ref ES
+leadlag significance                                             # formal tests that the reference leads (data/results/significance/)
 leadlag robustness                                               # writes data/results/robustness.csv
 uv pip install -e ".[notebook]"                                  # matplotlib + Jupyter kernel
 jupyter nbconvert --to notebook --execute --inplace results.ipynb   # or open it in Jupyter / VS Code
